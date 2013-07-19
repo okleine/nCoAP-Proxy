@@ -1,9 +1,6 @@
 package de.uniluebeck.itm.ncoap.proxy.handler.http2coap;
 
-import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimap;
+import com.google.common.collect.*;
 import de.uniluebeck.itm.ncoap.message.options.InvalidOptionException;
 import de.uniluebeck.itm.ncoap.message.options.Option;
 import de.uniluebeck.itm.ncoap.message.options.OptionRegistry.OptionName;
@@ -13,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -29,31 +27,45 @@ public class HttpHeader2CoapOption {
     private static BiMap<String, MediaType> mediaTypes = HashBiMap.create();
 
     static{
-        mediaTypes.put("text/plain", MediaType.TEXT_PLAIN_UTF8);
-        mediaTypes.put("application/xml", MediaType.APP_XML);
-        mediaTypes.put("application/rdf+xml", MediaType.APP_RDF_XML);
-        mediaTypes.put("application/shdt", MediaType.APP_SHDT);
-        mediaTypes.put("application/n3", MediaType.APP_N3);
+        mediaTypes.put( "text/plain",           MediaType.TEXT_PLAIN_UTF8   );
+        mediaTypes.put( "application/xml",      MediaType.APP_XML           );
+        mediaTypes.put( "application/rdf+xml",  MediaType.APP_RDF_XML       );
+        mediaTypes.put( "application/shdt",     MediaType.APP_SHDT          );
+        mediaTypes.put( "application/n3",       MediaType.APP_N3            );
     }
 
-    public static List<Option> getOptions(String headerName, String headerValue) throws InvalidOptionException {
-
-        ArrayList<Option> result = new ArrayList<Option>();
+    public static List<Option> getOptions(String headerName, String headerValue) {
 
         if(headerName.equals(HttpHeaders.Names.ACCEPT)){
-            Multimap<Double, String> acceptedMediaTypes = getAcceptedMediaTypes(headerValue);
-
-            for(Double priority : acceptedMediaTypes.keySet()){
-                for(String httpMediaType : acceptedMediaTypes.get(priority)){
-                    MediaType coapMediaType = mediaTypes.get(httpMediaType);
-                    result.add(Option.createUintOption(OptionName.ACCEPT, coapMediaType.number));
-                }
-            }
-
-            //return Option.createUintOption(OptionName.ACCEPT, (long) mediaType.number);
+            return getAcceptOptions(headerValue);
         }
 
-        return null;
+        return new ArrayList<>();
+    }
+
+    public static List<Option> getAcceptOptions(String httpAcceptHeaderValue){
+        ArrayList<Option> result = new ArrayList<>();
+
+        Multimap<Double, String> acceptedMediaTypes = getAcceptedMediaTypes(httpAcceptHeaderValue);
+
+        for(Double priority : acceptedMediaTypes.keySet()){
+            for(String httpMediaType : acceptedMediaTypes.get(priority)){
+                MediaType coapMediaType = mediaTypes.get(httpMediaType);
+                if(coapMediaType != null){
+                    try {
+                        result.add(Option.createUintOption(OptionName.ACCEPT, coapMediaType.number));
+                        log.debug("Added CoAP ACCEPT Option {}.", coapMediaType);
+                    } catch (InvalidOptionException e) {
+                        log.error("This should never happen.", e);
+                    }
+                }
+                else{
+                    log.warn("No appropriate CoAP media type found for {}.", httpMediaType);
+                }
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -68,41 +80,45 @@ public class HttpHeader2CoapOption {
      */
     public static Multimap<Double, String> getAcceptedMediaTypes(String headerValue){
 
-        Multimap<Double, String> result = HashMultimap.create();
+        Multimap<Double, String> result = TreeMultimap.create();
 
         for(String acceptedMediaType : headerValue.split(",")){
-            String[] parts = acceptedMediaType.split(";");
+            ArrayList<String> parts = new ArrayList<>(Arrays.asList(acceptedMediaType.split(";")));
+
+            if(log.isDebugEnabled()){
+                log.debug("Media type (from HTTP ACCEPT header): {}.", acceptedMediaType);
+                for(int i = 0; i < parts.size(); i++){
+                    log.debug("Part {}: {}", i + 1, parts.get(i));
+                }
+            }
 
             double priority = 1.0;
 
-            if(parts.length > 1){
-                String priorityString =
-                        parts[parts.length - 1].substring(parts[parts.length - 1].indexOf("=") + 1);
-
-                priority = Double.parseDouble(priorityString);
-            }
-
-            String httpMediaType;
-            if(parts.length > 2)
-                httpMediaType = parts[0].replace("\\s", "") + ";" + parts[1].replace("\\s", "");
-            else
-                httpMediaType = parts[0].replace("\\s", "");
-
-            //HTTP media subtype is wildcard
-            if(httpMediaType.substring(httpMediaType.indexOf("/") + 1) == "*"){
-                log.debug("Process wildcard in ACCEPT header ({}).", httpMediaType);
-
-                for(String knownHttpMediaType : mediaTypes.keySet()){
-                    if(knownHttpMediaType.startsWith((httpMediaType.substring(0, httpMediaType.indexOf("/") + 1)))){
-                        result.put(priority, knownHttpMediaType);
-                        log.debug("Added media type {} with priority {}.", httpMediaType);
-                    }
+            if(parts.size() > 1){
+                String priorityString = parts.get(parts.size() - 1).replace(" ", "");
+                if(priorityString.startsWith("q=")){
+                    priority = Double.parseDouble(priorityString.substring(priorityString.indexOf("=") + 1));
+                    parts.remove(parts.size() - 1);
                 }
             }
-            else{
-                result.put(priority, httpMediaType);
-                log.debug("Added media type {} with priority {}.", httpMediaType);
+
+
+            String httpMediaType;
+            if(parts.size() > 1)
+                httpMediaType = (parts.get(0) + ";" + parts.get(1)).replace(" ", "");
+            else
+                httpMediaType = parts.get(0).replace(" ", "");
+
+            log.debug("Found accepted media type {} with priority {}.", httpMediaType, priority);
+
+            if(httpMediaType.contains("*")){
+                log.warn("There is no support for wildcard types ({})", httpMediaType);
+                continue;
             }
+
+            result.put(priority * (-1), httpMediaType);
+            log.debug("Added media type {} with priority {}.", httpMediaType, priority);
+
         }
 
         return result;
